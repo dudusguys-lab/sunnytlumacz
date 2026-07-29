@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 from aiohttp import web
 from vosk import Model, KaldiRecognizer
 from deep_translator import GoogleTranslator
@@ -34,15 +35,12 @@ HTML_PAGE = """
 """
 
 async def handle_request(request):
-    print(f"[DEBUG] Otrzymano zapytanie HTTP/WS od: {request.remote} | Ścieżka: {request.path} | Upgrade: {request.headers.get('Upgrade')}", flush=True)
-    
-    # Sprawdzenie czy to próba połączenia WebSocket z pluginu
     if request.headers.get("Upgrade", "").lower() == "websocket":
-        ws = web.WebSocketResponse()
+        ws = web.WebSocketResponse(max_msg_size=0)
         try:
             await ws.prepare(request)
         except Exception as e:
-            print(f"[BLŁAD] Nie udało się przygotować WebSocket: {e}", flush=True)
+            print(f"[BŁĄD] WebSocket prepare: {e}", flush=True)
             return ws
 
         print("[+] Sukces! Połączono z pluginem Minecraft.", flush=True)
@@ -50,27 +48,49 @@ async def handle_request(request):
         
         try:
             async for msg in ws:
-                if msg.type == web.WSMsgType.BINARY:
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        if data.get("type") == "audio":
+                            audio_b64 = data.get("audio_data", "")
+                            if audio_b64:
+                                audio_bytes = base64.b64decode(audio_b64)
+                                if recognizer.AcceptWaveform(audio_bytes):
+                                    result = json.loads(recognizer.Result())
+                                    recognized_text = result.get("text", "").strip()
+                                    
+                                    if recognized_text:
+                                        print(f"[Mowa]: {recognized_text}", flush=True)
+                                        try:
+                                            translated_text = translator.translate(recognized_text)
+                                        except Exception as err:
+                                            print(f"Błąd tłumaczenia: {err}", flush=True)
+                                            translated_text = recognized_text
+                                        
+                                        print(f"[Tłumaczenie]: {translated_text}", flush=True)
+                                        
+                                        await ws.send_json({
+                                            "original": recognized_text,
+                                            "translated": translated_text
+                                        })
+                    except Exception as err:
+                        # Ignorujemy pomniejsze śmieci jsonowe, żeby nie spamować
+                        pass
+                elif msg.type == web.WSMsgType.BINARY:
                     if recognizer.AcceptWaveform(msg.data):
                         result = json.loads(recognizer.Result())
                         recognized_text = result.get("text", "").strip()
-                        
                         if recognized_text:
                             print(f"[Mowa]: {recognized_text}", flush=True)
                             try:
                                 translated_text = translator.translate(recognized_text)
                             except Exception as err:
-                                print(f"Błąd tłumaczenia: {err}", flush=True)
                                 translated_text = recognized_text
-                            
                             print(f"[Tłumaczenie]: {translated_text}", flush=True)
-                            
                             await ws.send_json({
                                 "original": recognized_text,
                                 "translated": translated_text
                             })
-                elif msg.type == web.WSMsgType.TEXT:
-                    print(f"[Tekst od klienta]: {msg.data}", flush=True)
         except Exception as e:
             print(f"Błąd w transmisji socketu: {e}", flush=True)
         finally:
@@ -78,7 +98,6 @@ async def handle_request(request):
             
         return ws
 
-    # Zwykłe zapytanie HTTP (np. z przeglądarki lub health check Rendera)
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
 async def init_app():
