@@ -1,65 +1,111 @@
 import os
-import asyncio
 import json
-import websockets
+from aiohttp import web
 from vosk import Model, KaldiRecognizer
 from deep_translator import GoogleTranslator
 
-# 1. Automatyczne pobieranie/ładowanie polskiego modelu Vosk
-print("Ładowanie/pobieranie modelu językowego Vosk (Polski)...", flush=True)
-model = Model(lang="pl") 
+# 1. Pobieranie / ładowanie modelu Vosk
+print("Ładowanie modelu językowego Vosk (Polski)...", flush=True)
+model = Model(lang="pl")
 print("Model załadowany pomyślnie!", flush=True)
 
-# 2. Inicjalizacja tłumacza (automatyczne wykrywanie -> angielski)
 translator = GoogleTranslator(source='auto', target='en')
 
-async def process_audio(websocket):
-    print("[+] Połączono z pluginem Minecraft.", flush=True)
-    
-    # Vosk wymaga formatu audio 16kHz (standard w Simple Voice Chat / Plasmo Voice)
-    recognizer = KaldiRecognizer(model, 16000)
-    
-    try:
-        # Pętla odbierająca pakiety audio z gry
-        async for message in websocket:
-            # Przetwarzanie strumienia bajtów audio
-            if recognizer.AcceptWaveform(message):
-                result = json.loads(recognizer.Result())
-                recognized_text = result.get("text", "").strip()
-                
-                # Jeśli Vosk wyłapał słowa
-                if recognized_text:
-                    print(f"[Mowa]: {recognized_text}", flush=True)
-                    
-                    # Przetłumaczenie tekstu
-                    try:
-                        translated_text = translator.translate(recognized_text)
-                    except Exception as err:
-                        print(f"Błąd tłumaczenia: {err}", flush=True)
-                        translated_text = recognized_text
-                    
-                    print(f"[Tłumaczenie]: {translated_text}", flush=True)
-                    
-                    # Przygotowanie odpowiedzi JSON dla gry
-                    response_payload = json.dumps({
-                        "original": recognized_text,
-                        "translated": translated_text
-                    })
-                    
-                    # Odesłanie wyniku do Minecrafta
-                    await websocket.send(response_payload)
-                    
-    except websockets.exceptions.ConnectionClosed:
-        print("[-] Rozłączono z pluginem Minecraft.", flush=True)
+# Wygląd prostej strony WWW
+HTML_PAGE = """
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>MC Translator Status</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .card {
+            background-color: #1e1e1e;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            text-align: center;
+            max-width: 400px;
+        }
+        .status {
+            display: inline-block;
+            background-color: #2e7d32;
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            margin-top: 15px;
+        }
+        h1 { margin-bottom: 10px; color: #fff; }
+        p { color: #aaa; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Sunny Translator</h1>
+        <p>Serwer tłumaczeń dla Minecrafta</p>
+        <div class="status">● SERWER DZIAŁA</div>
+    </div>
+</body>
+</html>
+"""
 
-async def main():
-    # Pobieramy port przydzielony przez hosting (Render) lub domyślnie 8765
-    port = int(os.environ.get("PORT", 8765))
-    
-    async with websockets.serve(process_audio, "0.0.0.0", port):
-        print("\n=== SERWER TRANSLATORA GOTOWY ===", flush=True)
-        print(f"Nasłuchiwanie na adresie: ws://0.0.0.0:{port}", flush=True)
-        await asyncio.Future()  # Utrzymanie serwera w działaniu
+async def handle_request(request):
+    # Jeśli to połączenie WebSocket (z pluginu MC)
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        print("[+] Połączono z pluginem Minecraft.", flush=True)
+        
+        recognizer = KaldiRecognizer(model, 16000)
+        
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.BINARY:
+                    if recognizer.AcceptWaveform(msg.data):
+                        result = json.loads(recognizer.Result())
+                        recognized_text = result.get("text", "").strip()
+                        
+                        if recognized_text:
+                            print(f"[Mowa]: {recognized_text}", flush=True)
+                            try:
+                                translated_text = translator.translate(recognized_text)
+                            except Exception as err:
+                                print(f"Błąd tłumaczenia: {err}", flush=True)
+                                translated_text = recognized_text
+                            
+                            print(f"[Tłumaczenie]: {translated_text}", flush=True)
+                            
+                            await ws.send_json({
+                                "original": recognized_text,
+                                "translated": translated_text
+                            })
+        except Exception as e:
+            print(f"Błąd połączenia: {e}", flush=True)
+        finally:
+            print("[-] Rozłączono z pluginem Minecraft.", flush=True)
+            
+        return ws
+
+    # Jeśli to zwykłe wejście z przeglądarki / sprawdzanie przez Render
+    return web.Response(text=HTML_PAGE, content_type="text/html")
+
+async def init_app():
+    app = web.Application()
+    app.router.add_get("/", handle_request)
+    return app
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8765))
+    print(f"\n=== SERWER TRANSLATORA GOTOWY (Port: {port}) ===", flush=True)
+    web.run_app(init_app(), host="0.0.0.0", port=port, print=None)
