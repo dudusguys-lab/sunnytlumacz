@@ -2,14 +2,40 @@ import asyncio
 import base64
 import json
 import os
+import urllib.request
+import zipfile
 from aiohttp import web
 from vosk import Model, KaldiRecognizer
 
-# Ładowanie modelu Vosk
-print("Ładowanie modelu Vosk...", flush=True)
-model = Model("model")  # upewnij się, że folder z modelem tak się nazywa
+MODEL_PATH = "model"
+MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-pl-0.22.zip"
+ZIP_NAME = "model.zip"
+
+# Automatyczne pobieranie i rozpakowywanie modelu, jeśli go nie ma
+if not os.path.exists(MODEL_PATH):
+    print("Pobieram polski model Vosk z internetu...", flush=True)
+    try:
+        urllib.request.urlretrieve(MODEL_URL, ZIP_NAME)
+        print("Rozpakowywuję model...", flush=True)
+        with zipfile.ZipFile(ZIP_NAME, 'r') as zip_ref:
+            zip_ref.extractall(".")
+        
+        # Znajdź rozpakowany folder i zmień nazwę na "model"
+        for name in os.listdir("."):
+            if os.path.isdir(name) and name.startswith("vosk-model"):
+                os.rename(name, MODEL_PATH)
+                break
+                
+        if os.path.exists(ZIP_NAME):
+            os.remove(ZIP_NAME)
+        print("Model gotowy!", flush=True)
+    except Exception as e:
+        print(f"[Błąd pobierania modelu]: {e}", flush=True)
+
+print("Ładowanie modelu Vosk do pamięci...", flush=True)
+model = Model(MODEL_PATH)
 recognizer = KaldiRecognizer(model, 16000)
-print("Model gotowy!", flush=True)
+print("Model załadowany pomyślnie!", flush=True)
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
@@ -21,18 +47,14 @@ async def websocket_handler(request):
             if msg.type == web.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
-                    # Sprawdzamy czy to pakiet audio
                     audio_b64 = data.get("audio_data", "")
                     if audio_b64:
                         audio_bytes = base64.b64decode(audio_b64)
                         process_audio(audio_bytes, recognizer)
-                    else:
-                        print(f"[Ostrzeżenie] Otrzymano JSON bez 'audio_data': {list(data.keys())}", flush=True)
                 except json.JSONDecodeError:
-                    print(f"[Błąd] Otrzymano niepoprawny JSON: {msg.data[:50]}...", flush=True)
+                    pass
                     
             elif msg.type == web.WSMsgType.BINARY:
-                # Jeśli plugin wysyła czyste bajty PCM
                 process_audio(msg.data, recognizer)
                 
     except Exception as e:
