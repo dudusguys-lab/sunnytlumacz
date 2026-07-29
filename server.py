@@ -33,49 +33,53 @@ HTML_PAGE = """
 </html>
 """
 
-async def handle_request(request):
-    # Sprawdzenie czy to połączenie WebSocket
-    if request.headers.get("Upgrade", "").lower() == "websocket":
-        ws = web.WebSocketResponse()
+async def websocket_handler(request):
+    ws = web.WebSocketResponse(max_msg_size=0)
+    
+    # Próba otwarcia połączenia WebSocket
+    try:
         await ws.prepare(request)
-        print("[+] Połączono z pluginem Minecraft!", flush=True)
-        
-        # Ustawienie 48000 Hz - dokładnie tyle wysyła Simple Voice Chat!
-        recognizer = KaldiRecognizer(model, 48000)
-        
-        try:
-            async for msg in ws:
-                if msg.type == web.WSMsgType.BINARY:
-                    if recognizer.AcceptWaveform(msg.data):
-                        result = json.loads(recognizer.Result())
-                        recognized_text = result.get("text", "").strip()
-                        
-                        if recognized_text:
-                            print(f"[Mowa]: {recognized_text}", flush=True)
-                            try:
-                                translated_text = translator.translate(recognized_text)
-                            except Exception as err:
-                                print(f"Błąd tłumaczenia: {err}", flush=True)
-                                translated_text = recognized_text
-                            
-                            print(f"[Tłumaczenie]: {translated_text}", flush=True)
-                            
-                            await ws.send_json({
-                                "original": recognized_text,
-                                "translated": translated_text
-                            })
-        except Exception as e:
-            print(f"Błąd połączenia: {e}", flush=True)
-        finally:
-            print("[-] Rozłączono z pluginem Minecraft.", flush=True)
-            
-        return ws
+    except Exception:
+        # Jeśli to zwykła przeglądarka / HTTP GET
+        return web.Response(text=HTML_PAGE, content_type="text/html")
 
-    return web.Response(text=HTML_PAGE, content_type="text/html")
+    print("[+] Połączono z pluginem Minecraft!", flush=True)
+    recognizer = KaldiRecognizer(model, 48000)
+
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.BINARY:
+                if recognizer.AcceptWaveform(msg.data):
+                    result = json.loads(recognizer.Result())
+                    recognized_text = result.get("text", "").strip()
+                    
+                    if recognized_text:
+                        print(f"[Mowa]: {recognized_text}", flush=True)
+                        try:
+                            translated_text = translator.translate(recognized_text)
+                        except Exception as err:
+                            print(f"Błąd tłumaczenia: {err}", flush=True)
+                            translated_text = recognized_text
+                        
+                        print(f"[Tłumaczenie]: {translated_text}", flush=True)
+                        
+                        await ws.send_json({
+                            "original": recognized_text,
+                            "translated": translated_text
+                        })
+            elif msg.type == web.WSMsgType.ERROR:
+                print(f"Błąd socketu: {ws.exception()}", flush=True)
+    except Exception as e:
+        print(f"Błąd w pętli transmisji: {e}", flush=True)
+    finally:
+        print("[-] Rozłączono z pluginem Minecraft.", flush=True)
+
+    return ws
 
 async def init_app():
     app = web.Application()
-    app.router.add_get("/", handle_request)
+    # Obsługuje wszystko na głównej ścieżce
+    app.router.add_route('*', '/{tail:.*}', websocket_handler)
     return app
 
 if __name__ == "__main__":
