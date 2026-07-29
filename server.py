@@ -1,112 +1,60 @@
-import os
-import json
+import asyncio
 import base64
+import json
+import os
 from aiohttp import web
 from vosk import Model, KaldiRecognizer
-from deep_translator import GoogleTranslator
 
-# 1. Ładowanie modelu Vosk
-print("Ładowanie modelu językowego Vosk (Polski)...", flush=True)
-model = Model(lang="pl")
-print("Model załadowany pomyślnie!", flush=True)
+# Ładowanie modelu Vosk
+print("Ładowanie modelu Vosk...", flush=True)
+model = Model("model")  # upewnij się, że folder z modelem tak się nazywa
+recognizer = KaldiRecognizer(model, 16000)
+print("Model gotowy!", flush=True)
 
-translator = GoogleTranslator(source='auto', target='en')
-
-HTML_PAGE = """
-<!DOCTYPE html>
-<html lang="pl">
-<head>
-    <meta charset="UTF-8">
-    <title>MC Translator Status</title>
-    <style>
-        body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .card { background-color: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
-        .status { background-color: #2e7d32; color: #fff; padding: 8px 16px; border-radius: 20px; font-weight: bold; margin-top: 15px; display: inline-block; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>Sunny Translator</h1>
-        <p>Serwer tłumaczeń dla Minecrafta</p>
-        <div class="status">● SERWER DZIAŁA</div>
-    </div>
-</body>
-</html>
-"""
-
-async def handle_request(request):
-    if request.headers.get("Upgrade", "").lower() == "websocket":
-        ws = web.WebSocketResponse(max_msg_size=0)
-        try:
-            await ws.prepare(request)
-        except Exception as e:
-            print(f"[BŁĄD] WebSocket prepare: {e}", flush=True)
-            return ws
-
-        print("[+] Sukces! Połączono z pluginem Minecraft.", flush=True)
-        recognizer = KaldiRecognizer(model, 48000)
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    print("[+] Sukces! Połączono z pluginem Minecraft.", flush=True)
+    
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    # Sprawdzamy czy to pakiet audio
+                    audio_b64 = data.get("audio_data", "")
+                    if audio_b64:
+                        audio_bytes = base64.b64decode(audio_b64)
+                        process_audio(audio_bytes, recognizer)
+                    else:
+                        print(f"[Ostrzeżenie] Otrzymano JSON bez 'audio_data': {list(data.keys())}", flush=True)
+                except json.JSONDecodeError:
+                    print(f"[Błąd] Otrzymano niepoprawny JSON: {msg.data[:50]}...", flush=True)
+                    
+            elif msg.type == web.WSMsgType.BINARY:
+                # Jeśli plugin wysyła czyste bajty PCM
+                process_audio(msg.data, recognizer)
+                
+    except Exception as e:
+        print(f"[Krytyczny błąd połączenia WS]: {e}", flush=True)
         
-        try:
-            async for msg in ws:
-                if msg.type == web.WSMsgType.TEXT:
-                    try:
-                        data = json.loads(msg.data)
-                        if data.get("type") == "audio":
-                            audio_b64 = data.get("audio_data", "")
-                            if audio_b64:
-                                audio_bytes = base64.b64decode(audio_b64)
-                                if recognizer.AcceptWaveform(audio_bytes):
-                                    result = json.loads(recognizer.Result())
-                                    recognized_text = result.get("text", "").strip()
-                                    
-                                    if recognized_text:
-                                        print(f"[Mowa]: {recognized_text}", flush=True)
-                                        try:
-                                            translated_text = translator.translate(recognized_text)
-                                        except Exception as err:
-                                            print(f"Błąd tłumaczenia: {err}", flush=True)
-                                            translated_text = recognized_text
-                                        
-                                        print(f"[Tłumaczenie]: {translated_text}", flush=True)
-                                        
-                                        await ws.send_json({
-                                            "original": recognized_text,
-                                            "translated": translated_text
-                                        })
-                    except Exception as err:
-                        # Ignorujemy pomniejsze śmieci jsonowe, żeby nie spamować
-                        pass
-                elif msg.type == web.WSMsgType.BINARY:
-                    if recognizer.AcceptWaveform(msg.data):
-                        result = json.loads(recognizer.Result())
-                        recognized_text = result.get("text", "").strip()
-                        if recognized_text:
-                            print(f"[Mowa]: {recognized_text}", flush=True)
-                            try:
-                                translated_text = translator.translate(recognized_text)
-                            except Exception as err:
-                                translated_text = recognized_text
-                            print(f"[Tłumaczenie]: {translated_text}", flush=True)
-                            await ws.send_json({
-                                "original": recognized_text,
-                                "translated": translated_text
-                            })
-        except Exception as e:
-            print(f"Błąd w transmisji socketu: {e}", flush=True)
-        finally:
-            print("[-] Rozłączono z pluginem Minecraft.", flush=True)
-            
-        return ws
+    print("[-] Rozłączono z klientem.", flush=True)
+    return ws
 
-    return web.Response(text=HTML_PAGE, content_type="text/html")
+def process_audio(audio_bytes, rec):
+    if rec.AcceptWaveform(audio_bytes):
+        result = json.loads(rec.Result())
+        text = result.get("text", "").strip()
+        if text:
+            print(f"[MOWA]: {text}", flush=True)
+    else:
+        partial = json.loads(rec.PartialResult()).get("partial", "").strip()
+        if partial:
+            print(f"[Słyszę fragment]: {partial}", flush=True)
 
-async def init_app():
-    app = web.Application()
-    app.router.add_get("/", handle_request)
-    app.router.add_get("/ws", handle_request)
-    return app
+app = web.Application()
+app.router.add_get('/', websocket_handler)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8765))
-    print(f"\n=== SERWER TRANSLATORA GOTOWY (Port: {port}) ===", flush=True)
-    web.run_app(init_app(), host="0.0.0.0", port=port, print=None)
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    web.run_app(app, port=port)
