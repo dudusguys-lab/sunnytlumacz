@@ -11,7 +11,6 @@ print("Model załadowany pomyślnie!", flush=True)
 
 translator = GoogleTranslator(source='auto', target='en')
 
-# Wygląd prostej strony WWW
 HTML_PAGE = """
 <!DOCTYPE html>
 <html lang="pl">
@@ -19,35 +18,9 @@ HTML_PAGE = """
     <meta charset="UTF-8">
     <title>MC Translator Status</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #121212;
-            color: #e0e0e0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .card {
-            background-color: #1e1e1e;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-            text-align: center;
-            max-width: 400px;
-        }
-        .status {
-            display: inline-block;
-            background-color: #2e7d32;
-            color: #fff;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-weight: bold;
-            margin-top: 15px;
-        }
-        h1 { margin-bottom: 10px; color: #fff; }
-        p { color: #aaa; font-size: 14px; }
+        body { font-family: sans-serif; background-color: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background-color: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
+        .status { background-color: #2e7d32; color: #fff; padding: 8px 16px; border-radius: 20px; font-weight: bold; margin-top: 15px; display: inline-block; }
     </style>
 </head>
 <body>
@@ -61,13 +34,14 @@ HTML_PAGE = """
 """
 
 async def handle_request(request):
-    # Jeśli to połączenie WebSocket (z pluginu MC)
+    # Sprawdzenie czy to połączenie WebSocket
     if request.headers.get("Upgrade", "").lower() == "websocket":
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        print("[+] Połączono z pluginem Minecraft.", flush=True)
+        print("[+] Połączono z pluginem Minecraft!", flush=True)
         
-        recognizer = KaldiRecognizer(model, 16000)
+        # Ustawienie 48000 Hz - dokładnie tyle wysyła Simple Voice Chat!
+        recognizer = KaldiRecognizer(model, 48000)
         
         try:
             async for msg in ws:
@@ -97,7 +71,6 @@ async def handle_request(request):
             
         return ws
 
-    # Jeśli to zwykłe wejście z przeglądarki / sprawdzanie przez Render
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
 async def init_app():
